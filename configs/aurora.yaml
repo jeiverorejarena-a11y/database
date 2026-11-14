@@ -1,0 +1,68 @@
+# Aurora Serverless v2 (PostgreSQL) — Repositorio Digital UNIPAZ
+# Configuración mínima: 1 sola instancia (writer), sin reader, sin RDS Proxy.
+
+# Prefijo para nombres de recursos (secretos, SG...). {{env}} -> dev / prod.
+resource_prefix: "{{env}}-unipaz-repositorio"
+
+# ── Red (de account-level-resources, vía SSM; se resuelve en deploy) ────────
+network:
+  vpc_id_ssm: "/unipaz/vpc/id"
+  # Mismo orden que las subnets (subnet-isolated-1 = us-east-2a, -2 = us-east-2b).
+  availability_zones:
+    - "us-east-2a"
+    - "us-east-2b"
+  # Subnets PÚBLICAS (ruta al Internet Gateway) para poder conectarse desde un
+  # cliente local (DBeaver). El acceso real lo limita el security group
+  # (`allowed_client_cidrs`). Aurora exige al menos 2 AZs en el subnet group
+  # aunque solo haya una instancia.
+  # OJO: cambiar estas subnets obliga a RECREAR el cluster.
+  subnet_ssm_params:
+    - "/unipaz/vpc/subnet-public-1/id"
+    - "/unipaz/vpc/subnet-public-2/id"
+
+# La instancia recibe IP pública (~$3.6/mes por IPv4 pública).
+publicly_accessible: true
+
+# ── Base de datos ──────────────────────────────────────────────────────────
+db_name: "unipaz_repositorio"
+db_username: "postgres"
+engine_version: "17.9"            # default de AWS para la línea 17 en us-east-2
+parameter_group_family: "aurora-postgresql17"
+
+# ── Serverless v2 (ACU) ────────────────────────────────────────────────────
+# min 0  -> auto-pause: sin actividad se apaga y solo se paga storage.
+# max 1  -> techo de costo (1 ACU ~ 2 GiB RAM). Subir si la app lo necesita.
+min_capacity: 0
+max_capacity: 1
+# Segundos sin conexiones antes de pausar (mínimo permitido: 300).
+# Al reanudar, la primera consulta tarda ~15 s (la API responde 503 y la UI
+# reintenta).
+seconds_until_auto_pause: 300
+
+# ── Backup ─────────────────────────────────────────────────────────────────
+backup_retention_days: 1          # mínimo permitido
+
+# ── Security group del cluster ─────────────────────────────────────────────
+# La Data API (como la usan las Lambdas) NO pasa por este SG.
+# Las IPs de clientes externos (DBeaver) se agregan aquí, siempre como /32.
+# Nunca usar 0.0.0.0/0. Si tu IP de casa cambia, actualiza y redespliega.
+security_group:
+  name: "{{env}}-unipaz-repositorio-db-sg"
+  description: "Security group for Unipaz Repositorio Aurora cluster"
+  ingress_rules:
+    - description: "PostgreSQL desde PC de Santiago (DBeaver)"
+      port: 5432
+      cidr: "190.69.47.2/32"
+    - description: "PostgreSQL desde lambda-generic-sg"
+      port: 5432
+      source_security_group_ssm: "/unipaz/lambda/sg/default"
+    - description: "PostgreSQL desde la VPC interna"
+      port: 5432
+      cidr: "10.20.0.0/16"
+
+# Usuarios adicionales de base de datos (secret por usuario). Vacío por ahora;
+# si la lista está vacía no se crea el stack de secretos.
+secrets: []
+  # - secret_name: "{{env}}-unipaz-repositorio/readwrite-user"
+  #   description: "Read-write access to the repositorio database"
+  #   username: "unipaz_readwrite"
